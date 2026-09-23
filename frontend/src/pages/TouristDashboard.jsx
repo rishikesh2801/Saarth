@@ -1594,68 +1594,165 @@ const DirectionModal = ({ show, onClose, destinationName, district, lat, lng }) 
   );
 };
 
-// Emergency Hospital Popup (Rendered outside to avoid nesting issues)
+// Emergency Hospital Popup (District Based)
 const EmergencyHospitalModal = ({ show, onClose, district, lat, lng, onNavigate }) => {
   const [hospitals, setHospitals] = useState([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (show) {
+    if (!show) return;
+
+    const findHospitals = async () => {
       setLoading(true);
-      const query = district 
-        ? `[out:json];area["name"="${district}"]->.searchArea;node["amenity"="hospital"](area.searchArea);out body;`
-        : `[out:json];node["amenity"="hospital"](around:10000,${lat},${lng});out body;`;
-        
-      fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`)
-        .then(res => res.json())
-        .then(data => {
-          const fetchedHospitals = data.elements.map(el => ({
-            name: el.tags.name || "Unnamed Hospital",
-            lat: el.lat,
-            lng: el.lon,
-            address: el.tags["addr:full"] || el.tags["addr:street"] || "Address not available"
-          }));
-          setHospitals(fetchedHospitals);
-        })
-        .catch(err => console.error(err))
-        .finally(() => setLoading(false));
-    }
+      setHospitals([]);
+
+      try {
+        let query;
+
+        if (district && district !== "All Districts") {
+          query = `
+            [out:json][timeout:30];
+            area["name"="${district}"]["boundary"="administrative"]->.searchArea;
+            (
+              node["amenity"="hospital"](area.searchArea);
+              way["amenity"="hospital"](area.searchArea);
+              relation["amenity"="hospital"](area.searchArea);
+            );
+            out center tags;
+          `;
+        } else {
+          query = `
+            [out:json][timeout:30];
+            (
+              node["amenity"="hospital"](around:15000,${lat},${lng});
+              way["amenity"="hospital"](around:15000,${lat},${lng});
+              relation["amenity"="hospital"](around:15000,${lat},${lng});
+            );
+            out center tags;
+          `;
+        }
+
+        const response = await fetch(
+          `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`
+        );
+
+        if (!response.ok) {
+          throw new Error("Hospital search failed");
+        }
+
+        const data = await response.json();
+
+        const results = (data.elements || [])
+          .map((item) => {
+            const hospitalLat = item.lat ?? item.center?.lat;
+            const hospitalLng = item.lon ?? item.center?.lon;
+
+            if (
+              typeof hospitalLat !== "number" ||
+              typeof hospitalLng !== "number"
+            ) {
+              return null;
+            }
+
+            return {
+              name:
+                item.tags?.name ||
+                item.tags?.["name:en"] ||
+                "Unnamed Hospital",
+              lat: hospitalLat,
+              lng: hospitalLng,
+              address:
+                item.tags?.["addr:full"] ||
+                item.tags?.["addr:street"] ||
+                item.tags?.["addr:city"] ||
+                "Address not available"
+            };
+          })
+          .filter(Boolean);
+
+        const uniqueHospitals = results.filter(
+          (hospital, index, array) =>
+            index ===
+            array.findIndex(
+              (h) =>
+                h.name.toLowerCase() === hospital.name.toLowerCase()
+            )
+        );
+
+        setHospitals(uniqueHospitals);
+      } catch (error) {
+        console.error("Hospital search error:", error);
+        setHospitals([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    findHospitals();
   }, [show, district, lat, lng]);
 
   if (!show) return null;
 
   return (
     <div className="fixed inset-0 bg-[#002B5B]/90 backdrop-blur-md flex items-center justify-center p-4 z-[9999]">
-      <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }} className="bg-white rounded-[3rem] p-8 max-w-4xl w-full shadow-2xl relative overflow-hidden flex flex-col h-[80vh]">
+      <motion.div
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        className="bg-white rounded-[3rem] p-8 max-w-5xl w-full shadow-2xl relative overflow-hidden flex flex-col h-[80vh]"
+      >
         <div className="flex justify-between items-center mb-6">
           <div>
-            <h3 className="text-2xl font-black text-red-600 flex items-center uppercase tracking-tighter"><Activity className="w-6 h-6 mr-3" /> Hospitals in {district || "Your Area"}</h3>
-            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">Sourced from OpenStreetMap for {district || "current radius"}</p>
+            <h3 className="text-2xl font-black text-red-600 flex items-center uppercase tracking-tighter">
+              <Activity className="w-6 h-6 mr-3" />
+              Hospitals in {district || "Your District"}
+            </h3>
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-2">
+              Emergency hospitals available in your district
+            </p>
           </div>
-          <button onClick={onClose} className="p-3 bg-red-50 rounded-full hover:bg-red-100 transition-colors"><X className="w-5 h-5 text-red-500" /></button>
+
+          <button
+            onClick={onClose}
+            className="p-3 bg-gray-100 hover:bg-red-50 rounded-full"
+          >
+            <X className="w-5 h-5 text-gray-600" />
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto bg-gray-50 rounded-[2rem] p-6 border border-gray-100 shadow-inner">
+
+        <div className="flex-1 overflow-y-auto bg-gray-50 rounded-[2rem] p-6">
           {loading ? (
-            <div className="flex flex-col items-center justify-center h-full text-gray-500">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-500 mb-4"></div>
-              <p className="font-bold">Searching for hospitals in {district || "your area"}...</p>
+            <div className="h-full flex flex-col items-center justify-center">
+              <div className="w-12 h-12 border-4 border-red-100 border-t-red-600 rounded-full animate-spin mb-4"></div>
+              <p className="font-black text-gray-500 uppercase text-sm">
+                Finding hospitals in {district || "your district"}...
+              </p>
             </div>
           ) : hospitals.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {hospitals.map((h, i) => (
-                <div key={i} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:border-red-200 transition-all group">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {hospitals.map((hospital, index) => (
+                <div
+                  key={`${hospital.name}-${index}`}
+                  className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm hover:border-red-200 transition-all"
+                >
                   <div className="flex items-start">
-                    <div className="p-3 bg-red-50 rounded-xl mr-4 group-hover:bg-red-100 transition-colors">
-                      <Activity className="w-6 h-6 text-red-600" />
+                    <div className="w-14 h-14 bg-red-50 rounded-2xl flex items-center justify-center mr-4 flex-shrink-0">
+                      <Activity className="w-7 h-7 text-red-600" />
                     </div>
-                    <div>
-                      <h4 className="font-black text-[#002B5B] text-lg leading-tight mb-1">{h.name}</h4>
-                      <p className="text-xs text-gray-500 font-medium mb-3">{h.address}</p>
-                      <button 
-                        onClick={() => onNavigate(h.name)}
-                        className="text-red-600 text-xs font-bold uppercase tracking-widest hover:underline flex items-center"
+
+                    <div className="flex-1">
+                      <h4 className="text-lg font-black text-[#002B5B]">
+                        {hospital.name}
+                      </h4>
+
+                      <p className="text-xs text-gray-500 mt-2">
+                        {hospital.address}
+                      </p>
+
+                      <button
+                        onClick={() => onNavigate(hospital.name)}
+                        className="mt-4 bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest"
                       >
-                        Navigate Now →
+                        Navigate
                       </button>
                     </div>
                   </div>
@@ -1663,9 +1760,14 @@ const EmergencyHospitalModal = ({ show, onClose, district, lat, lng, onNavigate 
               ))}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-gray-400">
-              <Activity className="w-16 h-16 mb-4 opacity-30" />
-              <p className="font-bold">No hospitals found in {district || "this area"}.</p>
+            <div className="h-full flex flex-col items-center justify-center text-center">
+              <Activity className="w-16 h-16 text-red-200 mb-4" />
+              <h3 className="text-xl font-black text-gray-600">
+                No Hospitals Found
+              </h3>
+              <p className="text-sm text-gray-400 mt-2">
+                No hospitals were found in {district || "your district"}.
+              </p>
             </div>
           )}
         </div>
